@@ -1,0 +1,18 @@
+#!/bin/sh
+currentDir=`pwd`
+if [ -f "$currentDir/cscope.*" ]; then
+   rm $currentDir/cscope.*
+fi
+#find -L -path "$currentDir/.jazz*" -name \*.h -print -or ! -path "$currentDir/.jazz*" -name \*.cpp -print -or ! -path "$currentDir/.jazz*" -name \*.hpp -print -or ! -path "$currentDir/.jazz*" -name \*.c -print > $currentDir/cscope.files
+echo "cscope trj9"
+find -L -path "$currentDir/.jazz*" -name \*.h -print -or ! -path "$currentDir/.jazz*" -name \*.cpp -print -or ! -path "$currentDir/.jazz*" -name \*.hpp -print -or ! -path "$currentDir/.jazz*" -name \*.c -print > $currentDir/cscope.files
+echo "cscope omr"
+export omrDir="$currentDir/../omr/compiler"
+if [ "$#" -eq 1 ]; then
+   export omrDir=$1
+   echo "specified $omrDir"
+fi
+find "$omrDir" \( -name \*.h -o -name \*.cpp -o -name \*.hpp -o -name \*.c \) -print >> $currentDir/cscope.files
+cscope -b -q -k
+echo "ctags trj9 and omr"
+ctags --extra=+f -R --exclude=.jazz* . $omrDir

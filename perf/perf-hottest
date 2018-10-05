@@ -1,0 +1,144 @@
+#!/usr/bin/env python
+from __future__ import print_function
+from collections import defaultdict, namedtuple
+import re, sys, textwrap
+
+try:
+    from builtins import hex as _builtin_hex
+except ImportError:
+    from __builtin__ import hex as _builtin_hex
+
+Sample = namedtuple('Sample', 'pc sym offs so thread')
+
+def main(args):
+    if len(args) == 0:
+        cmdline_error()
+
+    if args[0] in ('-h', '--help'):
+        if len(args) == 1:
+            usage(out=sys.stdout, status=0)
+        else:
+            cmdline_error()
+
+    attrs = set('pc sym offs so thread'.split())
+    group_by_attr = args[0]
+    if group_by_attr not in attrs:
+        cmdline_error()
+
+    pred = lambda s: True
+    def pred_compose(prev, attr, attr_re):
+        return lambda s: (prev(s) and attr_re.search(str(getattr(s, attr))))
+
+    for arg in args[1:]:
+        if '=' not in arg:
+            printerr('error: filter argument not of the form <attr>=<regex>:', arg)
+            cmdline_error()
+
+        cur_filter_attr, cur_filter_re_src = arg.split('=', 1)
+        try:
+            cur_filter_re = re.compile(cur_filter_re_src)
+        except re.error:
+            printerr('error: invalid regular expression:', cur_filter_re_src)
+            cmdline_error()
+
+        pred = pred_compose(pred, cur_filter_attr, cur_filter_re)
+
+    samples = (s for s in read_samples(sys.stdin) if pred(s))
+    counts = counts_by(group_by_attr, samples)
+    total_count = sum(n for key, n in counts.iteritems())
+    assert (total_count == 0) == (len(counts) == 0)
+
+    print('', total_count, '        --total--')
+
+    if len(counts) > 0:
+        table = []
+        for key, n in sorted(counts.iteritems(), key=lambda pair: pair[1], reverse=True):
+            pct = 100.0 * float(n) / float(total_count)
+            table.append((n, '{0:6.2f}%'.format(pct), key))
+
+        hex_key_fmt = '-0{width}x'
+        key_fmt = ''
+        if group_by_attr == 'pc':
+            key_fmt = hex_key_fmt
+        elif group_by_attr == 'offs' and '?' not in counts:
+            key_fmt = hex_key_fmt
+        format_table(('-{width}', '', key_fmt), table)
+
+
+def cmdline_error():
+    usage(out=sys.stderr, status=1)
+
+def printerr(*args):
+    print('error:', *args, out=sys.stderr)
+
+def usage(out, status):
+    msg = textwrap.dedent('''\
+        usage: perf script | perf-hottest <attr> [<attr>=<regex>...]
+        Attributes: pc, sym, offs, so, thread
+    ''')
+    print(msg, file=out)
+    sys.exit(status)
+
+#            java 29150 [000] 466465.248248:    1675118 cycles:ppp:  ffffffff810b503a hrtimer_cancel ([kernel.kallsyms])
+#     JIT Sampler 315987 3252516.366764: cache-misses:  ffffffff8132c284 find_next_bit ([kernel.kallsyms])
+#            java 37073 [001] 249993.499069: cache-misses:      2aaaabf79da4 Lorg/apache/openjpa/lib/jdbc/DelegatingPreparedStatement;::executeQuery (/tmp/perf-36754.map)
+# LargeThreadPool  4586  1770.870261:          1 cache-misses:  ffffffff815c699c tcp_event_data_recv ([kernel.kallsyms])
+#            java  4357   954.089749:        884 cache-misses:      2aaaabe98fbd Lcom/ibm/db2/jcc/t4/ab;::n (/tmp/perf-4069.map)
+#            java 114555 cycles:      7f90f93d0fa8 LTestPerf;::main (/tmp/perf-114543.map)
+# LargeThreadPool 59104      7f050035dae5 Ljava/util/HashMap;::hash (/tmp/perf-44765.map)
+
+def read_samples(f):
+    sample_re = r'''
+        \A
+        \s*
+        (?P<thread> \S | \S .* \S )     # thread name
+        \s+
+        (?: \d+ )                       # thread id? (ignore)
+        (?: \s+ | \s+\[\d+\]\s+)       # space or something like " [000] " // core id
+        \s*                             # now the good stuff!
+        (?P<pc> [0-9a-fA-F]+ )          # program counter
+        \s+
+        (?P<sym> \S | \S .+? \S )       # function symbol
+        (?P<offs> \+ 0x [0-9a-fA-F]+ )? # offset within function
+        \s+
+        \(
+        (?P<so> [^() \t]* )             # shared object
+        \)
+        \s*
+        \Z
+    '''
+    sample_re = re.compile(sample_re, re.VERBOSE)
+
+    for line in f:
+        m = sample_re.match(line)
+        if m is not None:
+            pc, sym, offs, so, thread = m.group('pc', 'sym', 'offs', 'so', 'thread')
+            if sym == '[unknown]':
+                sym = '[unknown:{0}]'.format(so)
+            else:
+                sym = sym + " " + so
+
+            offs = int(offs, 16) if offs else '?'
+            yield Sample(int(pc, 16), sym, offs, so, thread)
+
+def counts_by(by, samples):
+    c = defaultdict(int)
+    for s in samples:
+        c[getattr(s, by)] += 1
+    return c
+
+def format_table(formats, rows):
+    widths = []
+    for i, f in enumerate(formats):
+        f = '{{0:{0}}}'.format(f.format(width=''))
+        widths.append(max(len(f.format(row[i])) for row in rows))
+
+    row_fmt = ' ' + ' '.join(
+        '{{{0}:{1}}}'.format(i, f.format(width=w))
+        for i, (f, w) in enumerate(zip(formats, widths)))
+
+    for row in rows:
+        print(row_fmt.format(*row))
+
+if __name__ == '__main__':
+    main(sys.argv[1:])
