@@ -1,0 +1,203 @@
+#!/usr/bin/env python
+from __future__ import print_function
+import re, sys
+
+FORWARD = intern('forward')
+BACKWARD = intern('backward')
+
+def main(args):
+    direction = None
+    root = set()
+    goal = set()
+    kill = set()
+
+    if not args:
+        usage()
+
+    try:
+        direction = args[0]
+    except IndexError:
+        usage()
+
+    direction = intern(direction)
+    if direction not in (FORWARD, BACKWARD):
+        usage('invalid direction: {}', direction)
+
+    arg_sets = {'from': root, 'for': goal, 'without': kill}
+    active_set = None
+    args.reverse()
+    args.pop() # skip direction
+    while args:
+        arg = args.pop()
+
+        new_active_set = arg_sets.get(arg)
+        if new_active_set is not None:
+            active_set = new_active_set
+            try:
+                arg = args.pop()
+            except IndexError:
+                usage("`{}' requires a block", arg)
+
+        try:
+            block = int(arg)
+        except:
+            usage('invalid argument: {}', arg)
+
+        if active_set is None:
+            usage('stray block: {}', block)
+
+        active_set.add(block)
+
+    if not root:
+        usage("specify starting blocks with `from'")
+
+    if not goal:
+        usage("specify goal blocks with `for'")
+
+    if kill & root:
+        errprint('starting from excluded blocks: {}', ' '.join(kill & root))
+
+    if kill & goal:
+        errprint('searching for excluded blocks: {}', ' '.join(kill & goal))
+
+    cfg = cfgparse(direction)
+    bfstree = bfs(cfg, root, goal, kill)
+    showpaths(direction, bfstree, goal)
+
+def usage(*args, **kwargs):
+    if args or kwargs:
+        errprint(*args, **kwargs)
+        print(file=sys.stderr)
+
+    msg = '''
+usage: cfgsearch forward  <block-set> [<block-set>...]
+       cfgsearch backward <block-set> [<block-set>...]
+
+A <block-set> is a keyword followed by one or more block numbers.
+
+    from    <block> [<block>...]        Starting blocks (required)
+    for     <block> [<block>...]        Goal blocks (required)
+    without <block> [<block>...]        Excluded blocks
+'''
+
+    print(msg.strip(), file=sys.stderr)
+    sys.exit(1)
+
+def errprint(msg, *args, **kwargs):
+    print('error:', msg.format(*args, **kwargs), file=sys.stderr)
+
+def cfgparse(direction):
+    block_re = re.compile(r'\A\s*(\d+)\b')
+    edge_list_re_src = r'''
+        \A \s*
+        (?: exception \s+ )?
+        (?P<dirname> in | out ) \s*
+        = \s*
+        \[ \s*
+        (?P<edges> (?:
+            (?: \d+ \( \d+ \) \s + )*
+            \d+ \( \d+ \) \s*
+        )? )
+        \] \s*
+        \Z
+    '''
+    edge_list_re = re.compile(edge_list_re_src, re.VERBOSE)
+
+    dirname_map = {
+        FORWARD: 'out',
+        BACKWARD: 'in',
+    }
+    expected_dirname = dirname_map[direction]
+
+    cfg = {}
+    fail = False
+    cur_block = None
+    cur_edges = None
+    i = 0
+    for line in sys.stdin:
+        i += 1
+        line = line.strip()
+        if line in ('', '<cfg>', '</cfg>', '<structure>'):
+            continue
+
+        md = block_re.match(line)
+        if md is not None:
+            cur_edges = []
+            cur_block = int(md.group(1))
+            cfg[cur_block] = cur_edges
+            continue
+
+        md = edge_list_re.match(line)
+        if md is None:
+            errprint('line {}: invalid line: {}', i, line)
+            fail = True
+            continue
+
+        if cur_edges is None:
+            errprint('line {}: orphaned edges: {}', i, line)
+            fail = True
+            continue
+
+        dirname, edges = md.group('dirname', 'edges')
+        if dirname != expected_dirname:
+            continue
+
+        cur_edges.extend(int(e.split('(')[0]) for e in edges.split())
+
+    succname = 'successor' if direction is FORWARD else 'predecessor'
+    for block, successors in cfg.iteritems():
+        for succ in successors:
+            if succ not in cfg:
+                errprint('block {}: {} {} does not exist', block, succname, succ)
+                fail = True
+
+    if fail:
+        sys.exit(1)
+
+    for block in list(cfg.iterkeys()):
+        cfg[block] = tuple(cfg[block])
+
+    return cfg
+
+def bfs(cfg, root, stop, kill):
+    parent = {}
+    q = []
+    for b in root:
+        q.append(b)
+        parent[b] = None
+
+    i = 0
+    while i < len(q):
+        block = q[i]
+        i += 1
+
+        if block in stop:
+            # don't search paths through it
+            continue
+
+        for next_block in cfg[block]:
+            if next_block in parent or next_block in kill:
+                continue
+            parent[next_block] = block
+            q.append(next_block)
+
+    return parent
+
+def showpaths(direction, bfstree, goal):
+    for goal_block in goal:
+        if goal_block in bfstree:
+            path = rootpath(bfstree, goal_block)
+            if direction is FORWARD:
+                path.reverse()
+            print('-'.join(str(pe) for pe in path))
+
+def rootpath(parent, block):
+    path = []
+    while block is not None:
+        path.append(block)
+        block = parent[block]
+    return path
+
+if __name__ == '__main__':
+    main(sys.argv[1:])
+
